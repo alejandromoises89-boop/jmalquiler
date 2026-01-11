@@ -1,0 +1,7 @@
+{
+  "name": "JM Alquiler - Premium Car Management",
+  "description": "A sophisticated car rental management system with real-time currency conversion, reservation tracking, and AI-powered business insights.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
