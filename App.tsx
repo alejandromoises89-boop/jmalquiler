@@ -1,306 +1,526 @@
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import google.generativeai as genai
+from streamlit_drawable_canvas import st_canvas
+import datetime
+import uuid
+import os
+import json
+import requests
+import time
 
-import React, { useState, useEffect, useCallback } from 'react';
-import { storageService } from './services/storageService';
-import { currencyService } from './services/currencyService';
-import { AppData, Tab, Vehicle, ExchangeRates } from './types';
-import { VehicleCard } from './components/VehicleCard';
-import { BookingModal } from './components/BookingModal';
-import { AdminDashboard } from './components/AdminDashboard';
-import { ADMIN_KEY, APP_BORDO, CORPORATE_WA } from './constants';
-import { 
-  MapPin, Shield, ClipboardList, Instagram, MessageCircle, ChevronRight, 
-  Navigation, LayoutDashboard, Car, PhoneCall, Clock, Facebook, Mail, Globe,
-  Briefcase, Fingerprint, Award, ArrowRightLeft, Wifi, WifiOff
-} from 'lucide-react';
+# --- CONFIGURACIÓN DE PÁGINA ---
+st.set_page_config(
+    page_title="JM Alquiler | Premium Car Rental",
+    page_icon="🚘",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
 
-const App: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<Tab>(Tab.RESERVATIONS);
-  const [appData, setAppData] = useState<AppData>(storageService.loadData());
-  const [rates, setRates] = useState<ExchangeRates>({ PYG: 1450, USD: 0.18 });
-  const [selectedVehicle, setSelectedVehicle] = useState<Vehicle | null>(null);
-  const [adminPass, setAdminPass] = useState('');
-  const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
+# --- CONSTANTES Y ESTILOS ---
+APP_BORDO = "#600010"
+APP_GOLD = "#D4AF37"
+ADMIN_KEY = "8899"
+CORPORATE_WA = "595991681191"
 
-  useEffect(() => {
-    currencyService.getRatesFromBRL().then(res => setRates(res));
+# CSS Personalizado para imitar el look de la App React
+st.markdown(f"""
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700&family=Inter:wght@400;600&display=swap');
     
-    // Escuchar cambios en otras pestañas o ventanas del mismo navegador
-    const handleStorageChange = () => {
-      setAppData(storageService.loadData());
-    };
+    .stApp {{
+        background-color: #FDFCFB;
+        font-family: 'Inter', sans-serif;
+    }}
+    
+    h1, h2, h3 {{
+        font-family: 'Playfair Display', serif;
+        color: {APP_BORDO};
+    }}
+    
+    .stButton>button {{
+        background-color: {APP_BORDO};
+        color: white;
+        border-radius: 12px;
+        border: none;
+        padding: 0.5rem 1rem;
+        font-weight: bold;
+        letter-spacing: 1px;
+        transition: all 0.3s ease;
+        width: 100%;
+    }}
+    
+    .stButton>button:hover {{
+        background-color: {APP_GOLD};
+        color: #fff;
+    }}
+    
+    .metric-card {{
+        background-color: white;
+        border: 1px solid #eee;
+        border-radius: 20px;
+        padding: 20px;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        text-align: center;
+    }}
+    
+    .vehicle-card {{
+        background: white;
+        border-radius: 20px;
+        padding: 15px;
+        border: 1px solid #f0f0f0;
+        box-shadow: 0 10px 20px rgba(0,0,0,0.05);
+        margin-bottom: 20px;
+    }}
+    
+    .status-available {{ color: green; font-weight: bold; }}
+    .status-maintenance {{ color: red; font-weight: bold; }}
+    </style>
+""", unsafe_allow_html=True)
 
-    // Escuchar el evento personalizado disparado por storageService
-    window.addEventListener('jm_storage_update', handleStorageChange);
-    // Escuchar evento nativo de storage (para otras pestañas)
-    window.addEventListener('storage', handleStorageChange);
+# --- DATOS INICIALES (MOCK) ---
+INITIAL_FLEET = [
+  {
+    "id": '1', "nombre": "Hyundai Tucson 2012", "precio": 260.0,
+    "img": "https://i.ibb.co/rGJHxvbm/Tucson-sin-fondo.png", "estado": "Disponible",
+    "placa": "AAVI502", "transmision": "Automática", "combustible": "Diesel", "pasajeros": 5
+  },
+  {
+    "id": '2', "nombre": "Toyota Vitz 2012", "precio": 195.0,
+    "img": "https://i.ibb.co/Y7ZHY8kX/pngegg.png", "estado": "Disponible",
+    "placa": "AAVP719", "transmision": "Automática", "combustible": "Nafta", "pasajeros": 5
+  },
+  {
+    "id": '3', "nombre": "Toyota Vitz RS 2012", "precio": 195.0,
+    "img": "https://i.ibb.co/rKFwJNZg/2014-toyota-yaris-hatchback-2014-toyota-yaris-2018-toyota-yaris-toyota-yaris-yaris-toyota-vitz-fuel.png", 
+    "estado": "Disponible", "placa": "AAOR725", "transmision": "Secuencial", "combustible": "Nafta", "pasajeros": 5
+  },
+  {
+    "id": '4', "nombre": "Toyota Voxy 2011", "precio": 240.0,
+    "img": "https://i.ibb.co/VpSpSJ9Q/voxy.png", "estado": "Disponible",
+    "placa": "AAUG465", "transmision": "Automática", "combustible": "Nafta", "pasajeros": 7
+  }
+]
 
-    return () => {
-      window.removeEventListener('jm_storage_update', handleStorageChange);
-      window.removeEventListener('storage', handleStorageChange);
-    };
-  }, []);
+# --- GESTIÓN DE ESTADO Y PERSISTENCIA (LOCAL JSON) ---
+DATA_FILE = "jm_data.json"
 
-  const refreshData = useCallback(() => {
-    setAppData(storageService.loadData());
-  }, []);
+def load_data():
+    if not os.path.exists(DATA_FILE):
+        return {
+            "fleet": INITIAL_FLEET,
+            "reservations": [],
+            "expenses": []
+        }
+    try:
+        with open(DATA_FILE, "r") as f:
+            return json.load(f)
+    except:
+        return {"fleet": INITIAL_FLEET, "reservations": [], "expenses": []}
 
-  const handleAdminAuth = () => {
-    if (adminPass === ADMIN_KEY) {
-      setIsAdminAuthenticated(true);
-      setActiveTab(Tab.ADMIN);
-    } else alert('Acceso denegado. Clave incorrecta.');
-  };
+def save_data(data):
+    with open(DATA_FILE, "w") as f:
+        json.dump(data, f, indent=4)
 
-  return (
-    <div className="min-h-screen flex flex-col bg-[#FDFCFB]">
-      {/* HEADER NAVEGACIÓN PREMIUM */}
-      <nav className="fixed top-0 left-0 right-0 z-50 glass-header px-6 py-4">
-        <div className="max-w-7xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-4 group cursor-pointer" onClick={() => setActiveTab(Tab.RESERVATIONS)}>
-            <div className="w-12 h-12 bg-white rounded-xl flex items-center justify-center border-2 border-[#D4AF37] overflow-hidden shadow-xl transition-all group-hover:rotate-6">
-              <img src="https://i.ibb.co/PzsvxYrM/JM-Asociados-Logotipo-02.png" alt="Logo" className="w-10 h-10 object-contain" />
-            </div>
-            <div className="leading-tight">
-              <h1 className="text-xl font-black tracking-tighter luxury-title text-white uppercase">JM <span className="text-[#D4AF37]">Alquiler</span></h1>
-              <span className="text-[10px] font-bold text-[#D4AF37]/80 tracking-[0.3em] uppercase block">Triple Frontera VIP</span>
-            </div>
-          </div>
-          
-          <div className="hidden md:flex items-center gap-10">
-            {[
-              { id: Tab.RESERVATIONS, label: 'Unidades', icon: Car },
-              { id: Tab.LOCATION, label: 'Sede Central', icon: MapPin },
-              { id: Tab.ADMIN, label: 'Admin', icon: Fingerprint }
-            ].map((tab) => (
-              <button 
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id as Tab)}
-                className={`flex items-center gap-2.5 text-[10px] font-black uppercase tracking-[0.2em] transition-all py-2 rounded-lg ${
-                  activeTab === tab.id 
-                    ? 'text-[#D4AF37] border-b-2 border-[#D4AF37] pb-1' 
-                    : 'text-white/60 hover:text-white'
-                }`}
-              >
-                <tab.icon size={14} />{tab.label}
-              </button>
-            ))}
-          </div>
+# Inicializar Session State
+if 'data' not in st.session_state:
+    st.session_state.data = load_data()
+if 'view' not in st.session_state:
+    st.session_state.view = 'HOME' # HOME, LOCATION, ADMIN, BOOKING
+if 'selected_vehicle' not in st.session_state:
+    st.session_state.selected_vehicle = None
+if 'rates' not in st.session_state:
+    st.session_state.rates = {"PYG": 1450, "USD": 0.18}
 
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-6 bg-black/30 px-6 py-2.5 rounded-2xl border border-white/10 backdrop-blur-xl">
-               <div className="flex items-center gap-6 divide-x divide-white/10">
-                  <div className="leading-none text-right">
-                     <p className="text-white font-black text-[11px] uppercase tracking-wider">Gs. {rates.PYG.toLocaleString()}</p>
-                     <span className="text-[7px] font-black text-[#D4AF37]/50 uppercase tracking-[0.2em] block mt-0.5">BRL MARKET</span>
-                  </div>
-               </div>
-            </div>
-            {/* Indicador de Estado de Datos */}
-            <div className="hidden lg:flex items-center justify-center w-10 h-10 bg-white/5 rounded-full border border-white/10" title="Modo Local Activo">
-               <WifiOff size={16} className="text-white/30" />
-            </div>
-          </div>
-        </div>
-      </nav>
+# --- SERVICIOS AUXILIARES ---
+def get_currency_rates():
+    try:
+        resp = requests.get("https://open.er-api.com/v6/latest/BRL")
+        data = resp.json()
+        st.session_state.rates = {
+            "PYG": round(data['rates']['PYG']),
+            "USD": data['rates']['USD']
+        }
+    except:
+        pass # Usar default
 
-      {/* CUERPO DE LA APLICACIÓN */}
-      <main className="flex-1 pt-24">
-        {activeTab === Tab.RESERVATIONS && (
-          <div className="animate-fadeIn">
-            {/* Banner de Bienvenida */}
-            <div className="bg-bordo text-white py-24 px-6 relative overflow-hidden border-b-8 border-gold/10">
-              <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/dark-leather.png')] opacity-20"></div>
-              <div className="absolute -right-20 -bottom-20 w-96 h-96 bg-gold/5 rounded-full blur-[120px]"></div>
-              <div className="max-w-7xl mx-auto relative z-10 flex flex-col md:flex-row items-center gap-16">
-                <div className="flex-1 space-y-8 text-center md:text-left">
-                  <div className="inline-flex items-center gap-3 bg-white/5 border border-white/10 px-6 py-2 rounded-full">
-                    <Award size={16} className="text-gold" />
-                    <span className="text-gold font-black text-[9px] uppercase tracking-[0.4em]">Calidad Certificada MERCOSUR</span>
-                  </div>
-                  <h2 className="text-5xl md:text-8xl font-black luxury-title leading-[0.9] text-white">Domina el <span className="text-gold italic">Camino.</span></h2>
-                  <p className="text-white/60 text-lg max-w-xl font-light leading-relaxed">Gestione su movilidad corporativa con absoluta discreción y eficiencia técnica en Ciudad del Este.</p>
-                  <div className="flex flex-wrap justify-center md:justify-start gap-4 pt-6">
-                    <button onClick={() => document.getElementById('catalog')?.scrollIntoView({ behavior: 'smooth' })} className="bg-gold text-white px-12 py-6 rounded-2xl font-black text-xs uppercase tracking-[0.2em] hover:brightness-110 transition-all shadow-2xl flex items-center gap-3 group">Explorar Flota <ChevronRight size={18} className="group-hover:translate-x-1 transition-transform"/></button>
-                    <a href={`https://wa.me/${CORPORATE_WA}`} className="px-12 py-6 rounded-2xl border-2 border-white/10 font-black text-xs uppercase tracking-[0.2em] hover:bg-white/5 transition-all">Atención Directa</a>
-                  </div>
-                </div>
-                <div className="hidden lg:block flex-1">
-                   <img src="https://i.ibb.co/rGJHxvbm/Tucson-sin-fondo.png" className="w-full drop-shadow-[0_35px_35px_rgba(0,0,0,0.6)] animate-float" />
-                </div>
-              </div>
-            </div>
+def analyze_business_ai():
+    # Asegúrate de configurar tu API Key en st.secrets o variable de entorno
+    api_key = os.environ.get("API_KEY") # O st.secrets["API_KEY"]
+    if not api_key:
+        return "⚠️ Configura la API KEY de Gemini para usar esta función."
+    
+    try:
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel('gemini-2.0-flash')
+        
+        data_summary = f"""
+        Reservas Totales: {len(st.session_state.data['reservations'])}
+        Ingresos Totales (BRL): {sum(r['total'] for r in st.session_state.data['reservations'])}
+        Gastos Totales (BRL): {sum(e['monto'] for e in st.session_state.data['expenses'])}
+        Flota: {[f['nombre'] + ' (' + f['estado'] + ')' for f in st.session_state.data['fleet']]}
+        """
+        
+        prompt = f"""
+        Eres un consultor de negocios experto para una rentadora de autos en Paraguay.
+        Analiza estos datos y da 3 consejos cortos y accionables para mejorar la rentabilidad.
+        Datos: {data_summary}
+        """
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        return f"Error IA: {str(e)}"
 
-            {/* Catálogo de Unidades */}
-            <div id="catalog" className="max-w-7xl mx-auto px-6 py-24">
-              <div className="flex items-center justify-between mb-16 border-b border-gray-100 pb-8">
-                <div>
-                  <h3 className="text-4xl font-black luxury-title text-bordo mb-2">Unidades <span className="text-gold">Disponibles</span></h3>
-                  <p className="text-gray-400 text-[10px] font-black uppercase tracking-[0.3em]">Reserva de compromiso: 1 Día de alquiler</p>
-                </div>
-                <div className="flex gap-2">
-                  <div className="w-10 h-10 rounded-full border border-gray-200 flex items-center justify-center text-gray-300"><ChevronRight size={20} className="rotate-180"/></div>
-                  <div className="w-10 h-10 rounded-full border border-bordo flex items-center justify-center text-bordo"><ChevronRight size={20}/></div>
-                </div>
-              </div>
-              <div className="grid grid-cols-1 gap-16">
-                {appData.fleet.map(v => (
-                  <VehicleCard 
-                    key={v.id} 
-                    vehicle={v} 
-                    rates={rates} 
-                    onSelect={setSelectedVehicle} 
-                    reservations={appData.reservations.filter(r => r.auto === v.nombre && r.status !== 'Cancelada')} 
-                  />
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
+def get_contract_text(client_data, vehicle, start, end, total, days):
+    return f"""
+    CONTRATO DE ALQUILER DE VEHÍCULO - J&M ASOCIADOS
+    
+    ARRENDADOR: J&M ASOCIADOS (RUC/CI: 1.702.076-0)
+    ARRENDATARIO: {client_data['nombre']} (CI: {client_data['ci']})
+    
+    VEHÍCULO: {vehicle['nombre']} | PLACA: {vehicle['placa']}
+    FECHA RETIRO: {start} | FECHA DEVOLUCIÓN: {end} ({days} días)
+    TOTAL A PAGAR: R$ {total}
+    
+    1. El arrendatario recibe el vehículo en buen estado y se compromete a devolverlo igual.
+    2. El uso es exclusivo dentro del territorio nacional salvo autorización escrita.
+    3. En caso de accidente, el arrendatario cubre la franquicia del seguro (Gs. 5.000.000).
+    4. El arrendador autoriza al arrendatario a conducir el vehículo.
+    
+    Firma Digital Adjunta.
+    """
 
-        {activeTab === Tab.LOCATION && (
-          <div className="max-w-7xl mx-auto px-6 py-32 animate-fadeIn">
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-24 items-center">
-               <div className="space-y-12">
-                  <div>
-                    <h2 className="text-6xl font-black luxury-title text-bordo mb-6">Estamos <span className="text-gold">Aquí</span></h2>
-                    <p className="text-gray-500 text-lg leading-relaxed">Nuestra base operativa se encuentra en el corazón logístico de la Triple Frontera, garantizando entregas rápidas y soporte 24/7.</p>
-                  </div>
-                  <div className="space-y-6">
-                     {[
-                       { icon: MapPin, title: 'Dirección Corporativa', val: 'Av. Aviadores del Chaco c/ Av. Monseñor Rodriguez, CDE' },
-                       { icon: PhoneCall, title: 'Línea de Asistencia', val: `+${CORPORATE_WA}` },
-                       { icon: Clock, title: 'Horario Operativo', val: 'Lun-Vie 08:00 a 17:00 | Sáb-Dom 08:00 a 12:00' }
-                     ].map((item, i) => (
-                       <div key={i} className="flex gap-6 p-8 bg-white rounded-[2.5rem] border border-gray-100 shadow-sm hover:shadow-xl transition-all">
-                          <div className="w-16 h-16 bg-gold/10 rounded-2xl flex items-center justify-center text-gold"><item.icon size={24}/></div>
-                          <div><p className="text-[10px] font-black text-gray-300 uppercase tracking-widest mb-1">{item.title}</p><p className="text-gray-700 font-bold">{item.val}</p></div>
-                       </div>
-                     ))}
-                  </div>
-               </div>
-               <div className="relative group">
-                  <div className="absolute inset-0 bg-bordo rounded-[4rem] rotate-3 group-hover:rotate-0 transition-transform duration-700"></div>
-                  <div className="relative bg-white p-4 rounded-[4rem] shadow-2xl border-2 border-gray-100 overflow-hidden aspect-square flex items-center justify-center">
-                    <img src="https://i.ibb.co/PzsvxYrM/JM-Asociados-Logotipo-02.png" className="w-2/3 opacity-10 grayscale group-hover:grayscale-0 transition-all duration-700" />
-                    <div className="absolute inset-0 flex items-center justify-center bg-bordo/80 opacity-0 group-hover:opacity-100 transition-opacity">
-                       <button className="bg-gold text-white px-8 py-4 rounded-xl font-black text-xs uppercase tracking-widest flex items-center gap-3"><Navigation size={18}/> Abrir en Google Maps</button>
+# --- COMPONENTES UI ---
+
+def render_header():
+    col1, col2, col3 = st.columns([1, 4, 1])
+    with col1:
+        st.image("https://i.ibb.co/PzsvxYrM/JM-Asociados-Logotipo-02.png", width=60)
+    with col2:
+        st.markdown(f"<h3 style='margin:0'>JM ALQUILER</h3><span style='color:{APP_GOLD}; font-size: 0.8em; letter-spacing: 2px;'>TRIPLE FRONTERA VIP</span>", unsafe_allow_html=True)
+    with col3:
+        st.metric("Cotización BRL", f"Gs. {st.session_state.rates['PYG']:,}")
+
+def render_nav():
+    cols = st.columns(4)
+    if cols[0].button("🏠 Flota"): st.session_state.view = 'HOME'; st.session_state.selected_vehicle = None; st.rerun()
+    if cols[1].button("📍 Ubicación"): st.session_state.view = 'LOCATION'; st.rerun()
+    if cols[2].button("👮 Admin"): st.session_state.view = 'ADMIN'; st.rerun()
+    if cols[3].button("🔄 Actualizar"): get_currency_rates(); st.rerun()
+
+# --- VISTA: FLOTA (HOME) ---
+def view_home():
+    st.markdown(f"<h1 style='text-align:center; font-size: 3rem;'>Domina el <span style='color:{APP_GOLD}'>Camino</span></h1>", unsafe_allow_html=True)
+    
+    fleet = st.session_state.data['fleet']
+    
+    # Grid layout for vehicles
+    cols = st.columns(2)
+    for idx, v in enumerate(fleet):
+        with cols[idx % 2]:
+            with st.container():
+                st.markdown(f"""
+                <div class="vehicle-card">
+                    <div style="position:relative;">
+                        <span style="background-color:{'#e6fffa' if v['estado']=='Disponible' else '#fff5f5'}; 
+                                     color:{'green' if v['estado']=='Disponible' else 'red'}; 
+                                     padding:5px 10px; border-radius:10px; font-weight:bold; font-size:0.8em;">
+                            {v['estado']}
+                        </span>
+                        <img src="{v['img']}" style="width:100%; height:200px; object-fit:contain; mix-blend-mode: multiply;">
                     </div>
-                  </div>
-               </div>
-            </div>
-          </div>
-        )}
-
-        {activeTab === Tab.ADMIN && (
-          <div className="max-w-7xl mx-auto px-6 py-32 animate-fadeIn">
-            {!isAdminAuthenticated ? (
-              <div className="max-w-lg mx-auto bg-white p-16 rounded-[4rem] shadow-2xl border-2 border-gray-50 text-center space-y-12">
-                <div className="w-24 h-24 bg-bordo/5 rounded-full flex items-center justify-center mx-auto text-bordo"><Shield size={48} /></div>
-                <div className="space-y-2">
-                  <h3 className="text-4xl font-black luxury-title text-bordo">Control Maestro</h3>
-                  <p className="text-gray-400 text-[10px] font-black uppercase tracking-[0.3em]">Área de Auditoría Restringida</p>
-                </div>
-                <div className="space-y-6">
-                  <input type="password" value={adminPass} onChange={e => setAdminPass(e.target.value)} placeholder="••••" className="w-full bg-gray-50 border-2 border-gray-100 px-8 py-8 rounded-[2rem] text-center text-5xl font-black focus:border-gold outline-none tracking-[0.6em] transition-all" onKeyDown={e => e.key === 'Enter' && handleAdminAuth()} />
-                  <button onClick={handleAdminAuth} className="w-full bg-bordo text-white py-6 rounded-[1.5rem] font-black uppercase tracking-[0.3em] shadow-xl hover:bg-gold transition-all">Autenticar Acceso</button>
-                </div>
-              </div>
-            ) : (
-              <AdminDashboard data={appData} rates={rates} onRefresh={refreshData} />
-            )}
-          </div>
-        )}
-      </main>
-
-      {/* FOOTER CORPORATIVO FINAL */}
-      <footer className="bg-bordo text-white pt-24 pb-12 border-t-8 border-gold">
-        <div className="max-w-7xl mx-auto px-6">
-          <div className="grid grid-cols-1 lg:grid-cols-4 gap-20 mb-20">
-            {/* Columna 1: Marca */}
-            <div className="col-span-1 lg:col-span-1 space-y-8">
-              <div className="flex items-center gap-5">
-                <div className="w-14 h-14 bg-white rounded-2xl flex items-center justify-center p-2 shadow-2xl"><img src="https://i.ibb.co/PzsvxYrM/JM-Asociados-Logotipo-02.png" className="object-contain" /></div>
-                <div><h3 className="luxury-title text-2xl font-black text-white">JM <span className="text-gold">Asociados</span></h3><p className="text-[8px] font-black text-gold/60 uppercase tracking-[0.3em]">Logística de Excelencia</p></div>
-              </div>
-              <p className="text-white/50 text-sm leading-relaxed font-light">Especialistas en la gestión de flota ejecutiva para clientes VIP y corporaciones internacionales en la región del MERCOSUR.</p>
-              <div className="flex gap-4">
-                <a href="#" className="w-12 h-12 bg-white/5 rounded-2xl border border-white/10 flex items-center justify-center hover:bg-gold hover:border-gold transition-all duration-500"><Instagram size={20} /></a>
-                <a href="#" className="w-12 h-12 bg-white/5 rounded-2xl border border-white/10 flex items-center justify-center hover:bg-gold hover:border-gold transition-all duration-500"><Facebook size={20} /></a>
-                <a href={`https://wa.me/${CORPORATE_WA}`} className="w-12 h-12 bg-white/5 rounded-2xl border border-white/10 flex items-center justify-center hover:bg-gold hover:border-gold transition-all duration-500"><MessageCircle size={20} /></a>
-              </div>
-            </div>
-
-            {/* Columna 2: Navegación */}
-            <div className="space-y-8">
-              <h4 className="text-gold font-black uppercase tracking-[0.3em] text-[10px]">Mapa del Sitio</h4>
-              <ul className="space-y-5 text-[11px] font-black uppercase tracking-widest text-white/60">
-                <li><button onClick={() => setActiveTab(Tab.RESERVATIONS)} className="hover:text-white flex items-center gap-3 transition-all"><ArrowRightLeft size={12} className="text-gold"/> Alquiler de Unidades</button></li>
-                <li><button onClick={() => setActiveTab(Tab.LOCATION)} className="hover:text-white flex items-center gap-3 transition-all"><ArrowRightLeft size={12} className="text-gold"/> Ubicación y Sedes</button></li>
-                <li><button onClick={() => setActiveTab(Tab.ADMIN)} className="hover:text-white flex items-center gap-3 transition-all"><ArrowRightLeft size={12} className="text-gold"/> Panel Administrativo</button></li>
-                <li><a href={`https://wa.me/${CORPORATE_WA}`} className="hover:text-white flex items-center gap-3 transition-all"><ArrowRightLeft size={12} className="text-gold"/> Soporte 24/7</a></li>
-              </ul>
-            </div>
-
-            {/* Columna 3: Horarios */}
-            <div className="space-y-8">
-              <h4 className="text-gold font-black uppercase tracking-[0.3em] text-[10px]">Atención Administrativa</h4>
-              <div className="space-y-6">
-                 <div className="flex items-start gap-4">
-                    <Clock size={18} className="text-gold mt-1"/>
-                    <div>
-                      <p className="text-[10px] font-black uppercase text-white tracking-widest">Lunes a Viernes</p>
-                      <p className="text-xs text-white/50 font-medium">08:00 AM — 05:00 PM</p>
+                    <h3 style="margin-bottom:0;">{v['nombre']}</h3>
+                    <p style="color:gray; font-size:0.8em; letter-spacing:1px; margin-top:0;">{v['placa']}</p>
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin: 10px 0;">
+                        <div>
+                            <span style="font-size:1.5em; font-weight:900; color:{APP_BORDO}">R$ {v['precio']}</span>
+                            <small style="color:gray;">/día</small>
+                        </div>
+                        <div style="text-align:right;">
+                            <small>Aprox.</small><br>
+                            <b>Gs. {(v['precio'] * st.session_state.rates['PYG']):,.0f}</b>
+                        </div>
                     </div>
-                 </div>
-                 <div className="flex items-start gap-4">
-                    <Clock size={18} className="text-gold mt-1"/>
-                    <div>
-                      <p className="text-[10px] font-black uppercase text-white tracking-widest">Sábados y Domingos</p>
-                      <p className="text-xs text-white/50 font-medium">08:00 AM — 12:00 PM</p>
-                    </div>
-                 </div>
-              </div>
-            </div>
-
-            {/* Columna 4: Ubicación Legal */}
-            <div className="space-y-8">
-              <h4 className="text-gold font-black uppercase tracking-[0.3em] text-[10px]">Ubicación Global</h4>
-              <div className="bg-white/5 p-8 rounded-[2.5rem] border border-white/10 space-y-6 relative overflow-hidden">
-                <div className="absolute top-0 right-0 p-4 opacity-5"><Globe size={48}/></div>
-                <div className="space-y-2">
-                  <p className="text-[10px] font-black uppercase text-white tracking-widest">Sede Central</p>
-                  <p className="text-xs text-white/50 leading-relaxed font-light">Ciudad del Este, Paraguay.<br/>Triple Frontera Region.</p>
                 </div>
-                <div className="flex items-center gap-3 text-gold text-[9px] font-black uppercase tracking-widest">
-                   <div className="w-1.5 h-1.5 rounded-full bg-green-500"></div> Operativo Hoy
-                </div>
-              </div>
-            </div>
-          </div>
+                """, unsafe_allow_html=True)
+                
+                # Detalles técnicos
+                with st.expander("Ver Ficha Técnica"):
+                    c1, c2 = st.columns(2)
+                    c1.write(f"**Transmisión:** {v.get('transmision','-')}")
+                    c1.write(f"**Pasajeros:** {v.get('pasajeros','-')}")
+                    c2.write(f"**Combustible:** {v.get('combustible','-')}")
+                
+                if v['estado'] == 'Disponible':
+                    if st.button(f"RESERVAR {v['nombre']}", key=f"btn_{v['id']}"):
+                        st.session_state.selected_vehicle = v
+                        st.session_state.view = 'BOOKING'
+                        st.rerun()
+                else:
+                    st.button("NO DISPONIBLE", disabled=True, key=f"btn_dis_{v['id']}")
 
-          {/* Copyright Bar */}
-          <div className="pt-12 border-t border-white/10 flex flex-col md:flex-row justify-between items-center gap-8">
-            <p className="text-[10px] font-bold text-white/20 uppercase tracking-[0.4em]">© 2024 J&M Asociados. Excellence in Mobility Services.</p>
-            <div className="flex gap-10 text-[9px] font-black uppercase text-white/20 tracking-[0.3em]">
-              <a href="#" className="hover:text-gold transition-colors">Política Legal</a>
-              <a href="#" className="hover:text-gold transition-colors">Privacidad</a>
-              <a href="#" className="hover:text-gold transition-colors">Condiciones</a>
-            </div>
-          </div>
-        </div>
-      </footer>
+# --- VISTA: RESERVA (BOOKING WIZARD) ---
+def view_booking():
+    vehicle = st.session_state.selected_vehicle
+    if not vehicle:
+        st.session_state.view = 'HOME'
+        st.rerun()
 
-      {selectedVehicle && (
-        <BookingModal 
-          vehicle={selectedVehicle} 
-          rates={rates} 
-          onClose={() => setSelectedVehicle(null)} 
-          onSuccess={() => { setSelectedVehicle(null); refreshData(); }}
-          existingReservations={appData.reservations.filter(r => r.auto === selectedVehicle.nombre && r.status !== 'Cancelada')}
-        />
-      )}
-    </div>
-  );
-};
+    st.markdown(f"## Reservando: {vehicle['nombre']}")
+    col_img, col_form = st.columns([1, 2])
+    
+    with col_img:
+        st.image(vehicle['img'])
+        st.info(f"Tarifa Diaria: R$ {vehicle['precio']}")
 
-export default App;
+    with col_form:
+        # STEP 1: FECHAS
+        st.subheader("1. Selección de Fechas")
+        col_d1, col_d2 = st.columns(2)
+        today = datetime.date.today()
+        start_date = col_d1.date_input("Fecha Retiro", min_value=today, value=today)
+        end_date = col_d2.date_input("Fecha Devolución", min_value=start_date, value=start_date + datetime.timedelta(days=1))
+        
+        start_time = col_d1.time_input("Hora Retiro", value=datetime.time(9,0))
+        end_time = col_d2.time_input("Hora Devolución", value=datetime.time(9,0))
+
+        # Check availability logic
+        blocked = False
+        for r in st.session_state.data['reservations']:
+            if r['auto'] == vehicle['nombre'] and r['status'] != 'Cancelada':
+                r_start = datetime.datetime.strptime(r['inicio'], "%Y-%m-%d").date()
+                r_end = datetime.datetime.strptime(r['fin'], "%Y-%m-%d").date()
+                # Simple overlap check
+                if not (end_date < r_start or start_date > r_end):
+                    blocked = True
+                    break
+        
+        if blocked:
+            st.error("🚫 Vehículo no disponible en estas fechas.")
+            return
+
+        days = (end_date - start_date).days
+        if days < 1: days = 1
+        total_brl = days * vehicle['precio']
+        
+        st.success(f"Días: {days} | **Total a Pagar: R$ {total_brl:,.2f}** (Aprox. Gs. {total_brl * st.session_state.rates['PYG']:,.0f})")
+
+        # STEP 2: DATOS
+        st.subheader("2. Datos del Cliente")
+        name = st.text_input("Nombre Completo")
+        ci = st.text_input("CI / DNI / Pasaporte")
+        phone = st.text_input("WhatsApp (con código país)")
+
+        # STEP 3: PAGO
+        st.subheader("3. Método de Pago")
+        payment_method = st.radio("Seleccione opción:", ["Efectivo (en local)", "PIX", "Transferencia Ueno", "Tarjeta"])
+        
+        if payment_method == "PIX":
+            st.warning("Envía el pago a la llave: **24510861818** (Marina Baez). Sube el comprobante abajo.")
+        
+        proof_file = st.file_uploader("Subir Comprobante (Opcional)", type=['png', 'jpg', 'pdf'])
+
+        # STEP 4: CONTRATO
+        st.subheader("4. Contrato y Firma")
+        contract = get_contract_text({"nombre": name, "ci": ci}, vehicle, start_date, end_date, total_brl, days)
+        st.text_area("Contrato de Alquiler", value=contract, height=150, disabled=True)
+        
+        st.write("Firma Digital (Dibuja abajo):")
+        signature = st_canvas(
+            stroke_width=2,
+            stroke_color="#000000",
+            background_color="#ffffff",
+            height=150,
+            drawing_mode="freedraw",
+            key="signature"
+        )
+
+        terms = st.checkbox("Acepto los términos y condiciones")
+
+        if st.button("CONFIRMAR RESERVA"):
+            if not name or not ci or not phone:
+                st.error("Por favor completa todos los datos personales.")
+            elif not terms:
+                st.error("Debes aceptar los términos.")
+            elif signature.json_data is None or len(signature.json_data["objects"]) == 0:
+                st.error("Por favor firma el contrato.")
+            else:
+                # SAVE DATA
+                new_res = {
+                    "id": str(uuid.uuid4())[:8],
+                    "cliente": name,
+                    "ci": ci,
+                    "celular": phone,
+                    "auto": vehicle['nombre'],
+                    "inicio": str(start_date),
+                    "fin": str(end_date),
+                    "total": total_brl,
+                    "status": "Pendiente",
+                    "metodoPago": payment_method,
+                    "fechaRegistro": str(datetime.date.today())
+                }
+                st.session_state.data['reservations'].append(new_res)
+                save_data(st.session_state.data)
+                
+                # SUCCESS
+                st.balloons()
+                msg = f"*NUEVA RESERVA JM*\nID: {new_res['id']}\nAuto: {vehicle['nombre']}\nCliente: {name}\nFecha: {start_date} al {end_date}\nTotal: R$ {total_brl}"
+                wa_link = f"https://wa.me/{CORPORATE_WA}?text={requests.utils.quote(msg)}"
+                
+                st.success("¡Reserva Creada con Éxito!")
+                st.markdown(f"""
+                <a href="{wa_link}" target="_blank">
+                    <button style="background-color:#25D366; color:white; padding:10px 20px; border:none; border-radius:10px; font-weight:bold;">
+                        📱 ENVIAR A WHATSAPP
+                    </button>
+                </a>
+                """, unsafe_allow_html=True)
+                
+                time.sleep(5)
+                st.session_state.view = 'HOME'
+                st.rerun()
+
+# --- VISTA: UBICACIÓN ---
+def view_location():
+    st.markdown("## 📍 Nuestra Sede")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown(f"""
+        ### Dirección
+        Av. Aviadores del Chaco c/ Av. Monseñor Rodriguez
+        Ciudad del Este, Paraguay.
+        
+        ### Horarios
+        - Lun a Vie: 08:00 - 17:00
+        - Sáb a Dom: 08:00 - 12:00
+        
+        ### Contacto
+        WhatsApp: +{CORPORATE_WA}
+        """)
+    with c2:
+        # Un mapa estático o iframe de Google Maps
+        st.map(pd.DataFrame({'lat': [-25.509], 'lon': [-54.611]}))
+
+# --- VISTA: ADMIN ---
+def view_admin():
+    st.markdown("## 🛡️ Panel Administrativo")
+    
+    pwd = st.text_input("Clave de Acceso", type="password")
+    if pwd != ADMIN_KEY:
+        st.warning("Ingrese clave correcta.")
+        return
+
+    # DATA PROCESSING
+    reservations = st.session_state.data['reservations']
+    expenses = st.session_state.data['expenses']
+    fleet = st.session_state.data['fleet']
+
+    total_revenue = sum(r['total'] for r in reservations)
+    total_expenses_brl = sum(e['monto'] if e.get('moneda')=='BRL' else e['monto']/st.session_state.rates['PYG'] for e in expenses)
+    profit = total_revenue - total_expenses_brl
+
+    # KPIS
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Ingresos Totales", f"R$ {total_revenue:,.0f}")
+    k2.metric("Gastos (Est. BRL)", f"R$ {total_expenses_brl:,.0f}")
+    k3.metric("Beneficio Neto", f"R$ {profit:,.0f}", delta_color="normal")
+
+    # TABS
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 Dashboard", "🚗 Flota", "📝 Reservas", "💸 Gastos"])
+
+    with tab1:
+        st.subheader("Análisis de Negocio")
+        if st.button("✨ Generar Análisis con Gemini AI"):
+            with st.spinner("Consultando IA..."):
+                analysis = analyze_business_ai()
+                st.info(analysis)
+        
+        # Charts
+        c1, c2 = st.columns(2)
+        if reservations:
+            df_res = pd.DataFrame(reservations)
+            fig_rev = px.bar(df_res, x='fechaRegistro', y='total', title='Ingresos por Fecha', color_discrete_sequence=[APP_GOLD])
+            c1.plotly_chart(fig_rev, use_container_width=True)
+        
+        if expenses:
+            df_exp = pd.DataFrame(expenses)
+            fig_exp = px.pie(df_exp, names='categoria', values='monto', title='Gastos por Categoría', color_discrete_sequence=px.colors.sequential.RdBu)
+            c2.plotly_chart(fig_exp, use_container_width=True)
+
+    with tab2:
+        st.subheader("Gestión de Flota")
+        for v in fleet:
+            with st.expander(f"{v['nombre']} ({v['estado']})"):
+                new_status = st.selectbox("Estado", ["Disponible", "En Taller"], index=0 if v['estado']=="Disponible" else 1, key=f"st_{v['id']}")
+                new_maint = st.date_input("Próx. Mantenimiento", key=f"mt_{v['id']}")
+                if st.button("Guardar Estado", key=f"sv_{v['id']}"):
+                    v['estado'] = new_status
+                    v['proximoMantenimiento'] = str(new_maint)
+                    save_data(st.session_state.data)
+                    st.success("Actualizado")
+                    st.rerun()
+
+    with tab3:
+        st.subheader("Historial de Reservas")
+        if reservations:
+            st.dataframe(pd.DataFrame(reservations))
+            
+            # Manual Entry
+            with st.form("manual_res"):
+                st.write("Carga Manual")
+                c1, c2, c3 = st.columns(3)
+                m_cli = c1.text_input("Cliente")
+                m_car = c2.selectbox("Auto", [v['nombre'] for v in fleet])
+                m_tot = c3.number_input("Total R$", min_value=0.0)
+                if st.form_submit_button("Agregar"):
+                    new_r = {
+                        "id": "MANUAL", "cliente": m_cli, "ci": "000", "celular": "000",
+                        "auto": m_car, "inicio": str(datetime.date.today()), "fin": str(datetime.date.today()),
+                        "total": m_tot, "status": "Completada", "metodoPago": "Efectivo",
+                        "fechaRegistro": str(datetime.date.today())
+                    }
+                    st.session_state.data['reservations'].append(new_r)
+                    save_data(st.session_state.data)
+                    st.rerun()
+
+    with tab4:
+        st.subheader("Control de Gastos")
+        with st.form("add_expense"):
+            c1, c2, c3 = st.columns(3)
+            desc = c1.text_input("Descripción")
+            amount = c2.number_input("Monto", min_value=0.0)
+            curr = c3.selectbox("Moneda", ["BRL", "PYG"])
+            cat = st.selectbox("Categoría", ["Mantenimiento", "Lavado", "Seguro", "Otro"])
+            
+            if st.form_submit_button("Registrar Gasto"):
+                new_exp = {
+                    "id": str(uuid.uuid4())[:6],
+                    "descripcion": desc,
+                    "monto": amount,
+                    "moneda": curr,
+                    "categoria": cat,
+                    "fecha": str(datetime.date.today())
+                }
+                st.session_state.data['expenses'].append(new_exp)
+                save_data(st.session_state.data)
+                st.success("Gasto registrado")
+                st.rerun()
+        
+        if expenses:
+            st.dataframe(pd.DataFrame(expenses))
+
+# --- APP MAIN FLOW ---
+render_header()
+st.divider()
+render_nav()
+
+if st.session_state.view == 'HOME':
+    view_home()
+elif st.session_state.view == 'BOOKING':
+    view_booking()
+elif st.session_state.view == 'LOCATION':
+    view_location()
+elif st.session_state.view == 'ADMIN':
+    view_admin()
